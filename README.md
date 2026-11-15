@@ -51,6 +51,19 @@ python pipeline.py episode.mp3                      # offline
 python pipeline.py episode.mp3 --mode claude        # uses ANTHROPIC_API_KEY
 ```
 
+## Fixing words afterwards
+
+If a name or word came out wrong, you don't need to redo the file. In **Fix words in a subtitle file** on the page:
+
+1. Choose the `.srt` (or press **Fix words in these subtitles** right after making one).
+2. The page lists the names and capitalised words it found, with counts. Click one, or type the wrong word yourself, and enter the correct version.
+3. **Preview changes** shows every subtitle that would change, before and after.
+4. **Download corrected .srt**. Only the wording changes; every timing stays exactly as it was.
+
+**Remember these for future files** adds the corrections to your saved word list (`my_words.json` in the app folder). From then on they are applied automatically to every new subtitle file, and in Claude mode they are also given to Claude so the translation uses your wording from the start. Click an entry in the list to remove it.
+
+Matching is on whole words and ignores capital letters by default; both can be switched off.
+
 ## Updating
 
 ```bash

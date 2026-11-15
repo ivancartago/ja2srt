@@ -4,6 +4,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request
 
+import fixes
 import pipeline
 
 app = Flask(__name__)
@@ -42,6 +43,11 @@ PAGE = r"""<!doctype html>
   ul { padding-left:20px; margin:10px 0 0; } li { margin-bottom:6px; }
   table { border-collapse:collapse; width:100%; margin-top:10px; font-size:14px; } td { border-top:1px solid var(--line); padding:6px 8px 6px 0; vertical-align:top; }
   td:first-child { font-family:ui-monospace, Menlo, Consolas, monospace; white-space:nowrap; color:var(--soft); }
+  .row { display:flex; gap:8px; align-items:center; margin-bottom:8px; } .row input { flex:1; font-family:inherit; } .row span { color:var(--soft); }
+  button.small, button.ghost { margin-top:0; padding:7px 12px; font-size:14px; } button.ghost { background:none; color:var(--accent); border:1px solid var(--line); }
+  .chip { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 10px; margin:0 6px 6px 0; font-size:14px; background:#fff; cursor:pointer; color:var(--ink); font-weight:normal; }
+  .chip:hover { border-color:var(--accent); } h2 { font-size:21px; margin:0 0 6px; } .hint { color:var(--soft); font-size:14px; margin:4px 0 12px; }
+  del { color:var(--accent); } ins { color:var(--ok); text-decoration:none; font-weight:bold; }
   [hidden] { display:none !important; }
 </style></head><body><main>
 <h1>Japanese audio to English subtitles</h1>
@@ -70,7 +76,26 @@ PAGE = r"""<!doctype html>
   <p><a id="dl" class="btn" href="#">Download .srt</a></p>
   <p id="summary"></p><ul id="notes"></ul>
   <div id="flagbox" hidden><p><strong>Subtitles worth a look</strong> (the check could not confirm these in their time slot):</p><table id="flags"></table></div>
-  <button id="again" type="button">Do another file</button>
+  <button id="again" type="button">Do another file</button> <button id="fixthese" type="button" class="ghost" style="padding:12px 22px;font-size:16px">Fix words in these subtitles</button>
+</div>
+
+<div id="fixcard" class="card">
+  <h2>Fix words in a subtitle file</h2>
+  <p class="hint">Correct a mistranslated name or word everywhere it appears, without redoing the file. Timings are not touched.</p>
+  <button id="pickSrt" type="button" class="ghost">Choose an .srt file</button> <span id="srtName" class="hint"></span>
+  <input id="srtFile" type="file" accept=".srt,text/plain" hidden>
+  <div id="fixbody" hidden>
+    <div id="namebox" hidden><p class="hint" style="margin-bottom:6px">Names and capitalised words in this file (click one to correct it):</p><div id="names"></div></div>
+    <p style="margin:14px 0 6px"><strong>Corrections</strong></p>
+    <div id="rows"></div>
+    <button id="addRow" type="button" class="ghost">Add another</button>
+    <p class="hint" style="margin-top:12px"><label><input id="whole" type="checkbox" checked> Whole words only</label> &nbsp; <label><input id="nocase" type="checkbox" checked> Ignore capital letters when matching</label></p>
+    <button id="preview" type="button">Preview changes</button>
+    <p id="fixmsg" role="status" aria-live="polite" class="hint"></p>
+    <table id="changes"></table>
+    <p id="fixactions" hidden><a id="dlfix" class="btn" href="#">Download corrected .srt</a> <button id="remember" type="button" class="ghost" style="padding:12px 16px">Remember these for future files</button></p>
+  </div>
+  <div id="savedbox" hidden><p style="margin:18px 0 6px"><strong>Your saved word list</strong></p><p class="hint">Applied automatically to every new subtitle file, and given to Claude in Claude mode. Click one to remove it.</p><div id="saved"></div></div>
 </div>
 <p id="ver" class="sub" style="margin-top:24px;font-size:14px"></p>
 </main>
@@ -102,7 +127,7 @@ $('form').onsubmit = async e => {
     if (s.error) return fail(s.error);
     $('bar').value = Math.round(s.frac * 100); $('msg').textContent = s.msg;
     if (!s.done) return setTimeout(poll, 1000);
-    $('work').hidden = true; $('done').hidden = false; $('dl').href = '/download/' + r.id; $('dl').download = s.name;
+    lastJob = r.id; $('work').hidden = true; $('done').hidden = false; $('dl').href = '/download/' + r.id; $('dl').download = s.name;
     $('summary').textContent = s.name + ': ' + s.cues + ' subtitles.';
     $('notes').replaceChildren(...s.notes.map(n => Object.assign(document.createElement('li'), { textContent: n })));
     $('flagbox').hidden = !s.flags.length;
@@ -110,6 +135,40 @@ $('form').onsubmit = async e => {
   };
   poll();
 };
+// ---------- fix words
+let srtText = '', srtName = 'subtitles.srt', lastJob = null, fixedUrl = null;
+const el = (tag, props, ...kids) => { const e = Object.assign(document.createElement(tag), props || {}); e.append(...kids); return e; };
+const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+const addRow = (wrong = '', right = '') => {
+  const a = el('input', { type: 'text', placeholder: 'Wrong word or name', value: wrong, ariaLabel: 'Wrong word' }), b = el('input', { type: 'text', placeholder: 'Correct version', value: right, ariaLabel: 'Correct version' });
+  const x = el('button', { type: 'button', className: 'ghost small', textContent: 'Remove', onclick: () => row.remove() });
+  const row = el('div', { className: 'row' }, a, el('span', { textContent: '\u2192' }), b, x); $('rows').append(row); return b;
+};
+const pairs = () => [...$('rows').children].map(r => ({ wrong: r.children[0].value.trim(), right: r.children[2].value.trim() })).filter(p => p.wrong && p.wrong !== p.right);
+const showNames = names => { $('namebox').hidden = !names.length; $('names').replaceChildren(...names.map(n => el('button', { type: 'button', className: 'chip', textContent: n.name + ' \u00d7' + n.count, onclick: () => addRow(n.name, '').focus() }))); };
+const loadSrt = (text, name) => { srtText = text; srtName = name; $('srtName').textContent = name; $('fixbody').hidden = false; $('rows').replaceChildren(); addRow(); $('changes').replaceChildren(); $('fixactions').hidden = true; $('fixmsg').textContent = '';
+  post('/fix', { srt: text, pairs: [] }).then(r => { if (r.error) { $('fixmsg').textContent = r.error; $('fixbody').hidden = true; } else showNames(r.names); }); };
+$('pickSrt').onclick = () => $('srtFile').click();
+$('srtFile').onchange = e => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => loadSrt(rd.result, f.name); rd.readAsText(f); };
+$('addRow').onclick = () => addRow().previousSibling.previousSibling.focus();
+$('fixthese').onclick = async () => { const r = await (await fetch('/srt/' + lastJob)).json(); if (r.error) return alertMsg(r.error); loadSrt(r.srt, r.name); $('fixcard').scrollIntoView({ behavior: 'smooth' }); };
+const alertMsg = t => { $('fixmsg').textContent = t; };
+$('preview').onclick = async () => {
+  const p = pairs(); if (!p.length) return alertMsg('Type the wrong word on the left and the correct one on the right.');
+  const r = await post('/fix', { srt: srtText, pairs: p, whole: $('whole').checked, nocase: $('nocase').checked });
+  if (r.error) return alertMsg(r.error);
+  const missed = p.filter(x => !r.counts[x.wrong]).map(x => '"' + x.wrong + '"');
+  alertMsg(r.total ? r.total + ' subtitle' + (r.total === 1 ? '' : 's') + ' will change.' + (missed.length ? ' Not found: ' + missed.join(', ') + '.' : '') : 'None of these words were found in the file.');
+  $('changes').replaceChildren(...r.changes.map(c => el('tr', null, el('td', { textContent: c.time }), el('td', null, el('del', { textContent: c.before }), el('br'), el('ins', { textContent: c.after })))));
+  $('fixactions').hidden = !r.total;
+  if (fixedUrl) URL.revokeObjectURL(fixedUrl); fixedUrl = URL.createObjectURL(new Blob([r.srt], { type: 'application/x-subrip' }));
+  $('dlfix').href = fixedUrl; $('dlfix').download = srtName;
+};
+const showSaved = list => { $('savedbox').hidden = !list.length; $('saved').replaceChildren(...list.map(p => el('button', { type: 'button', className: 'chip', title: 'Remove from the list', textContent: p.wrong + ' \u2192 ' + p.right,
+  onclick: async () => showSaved((await post('/words', { pairs: list.filter(q => q !== p) })).pairs) }))); };
+fetch('/words').then(r => r.json()).then(r => showSaved(r.pairs));
+$('remember').onclick = async () => { const cur = (await (await fetch('/words')).json()).pairs; showSaved((await post('/words', { pairs: cur.concat(pairs()) })).pairs); alertMsg('Saved. These corrections will be applied to new subtitle files automatically.'); };
+
 $('again').onclick = () => { $('done').hidden = true; file = null; $('file').value = ''; $('fname').textContent = 'Drop an audio file here'; $('go').disabled = true; };
 </script></body></html>"""
 
@@ -193,6 +252,35 @@ def status(jid):
     if not j:
         return jsonify(error="Unknown job (the app may have been restarted).")
     return jsonify({k: j.get(k) for k in ("msg", "frac", "done", "error", "name", "cues", "notes", "flags")})
+
+
+@app.get("/srt/<jid>")
+def srt_text(jid):
+    j = JOBS.get(jid)
+    if not j or not j.get("done"):
+        return jsonify(error="Those subtitles are no longer available. Choose the .srt file instead.")
+    return jsonify(srt=j["srt"], name=j["name"])
+
+
+@app.get("/words")
+def words_get():
+    return jsonify(pairs=fixes.load_words())
+
+
+@app.post("/words")
+def words_set():
+    return jsonify(pairs=fixes.save_words((request.get_json(silent=True) or {}).get("pairs", [])))
+
+
+@app.post("/fix")
+def fix():
+    d = request.get_json(silent=True) or {}
+    try:
+        new, changes, counts = fixes.fix_srt(d.get("srt", ""), d.get("pairs", []), bool(d.get("whole", True)),
+                                             bool(d.get("nocase", True)), wrap=pipeline.wrap)
+    except ValueError as e:
+        return jsonify(error=str(e))
+    return jsonify(srt=new, changes=changes[:300], total=len(changes), counts=counts, names=fixes.names_in(d.get("srt", "")))
 
 
 @app.get("/download/<jid>")

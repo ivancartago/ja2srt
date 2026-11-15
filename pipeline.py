@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+import fixes
+
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
 CFG = json.loads((ROOT / "models.json").read_text(encoding="utf-8"))   # which speech models to use
@@ -409,6 +411,7 @@ def run_claude(audio, progress, api_key, model, ask=None, check=True):
             continue                                             # obvious non-speech: not worth sending
         items.append({"id": i, "start": round(a, 2), "end": round(b, 2), "a": first[i], "b": z})
     names, result, notes, CH = {}, {}, [], 30
+    saved = fixes.load_words()
     for c0 in range(0, len(items), CH):
         chunk = items[c0:c0 + CH]
         progress(f"Translating with Claude ({min(c0 + CH, len(items))}/{len(items)} segments)", 0.60 + 0.25 * c0 / max(1, len(items)))
@@ -416,6 +419,8 @@ def run_claude(audio, progress, api_key, model, ask=None, check=True):
         ctx = "\n".join(f"[{a:.1f}-{b:.1f}] {t}" for a, b, t in context if b >= lo and a <= hi and t)
         prev = [c["en"] for i in sorted(result) for c in result[i]][-6:]
         user = ("Name spellings already decided: " + (json.dumps(names, ensure_ascii=False) if names else "none yet") + "\n\n"
+                + (("Wording the user has chosen (always write the form on the right instead of the one on the left): "
+                    + "; ".join(f'"{w["wrong"]}" -> "{w["right"]}"' for w in saved) + "\n\n") if saved else "")
                 + ("The previous subtitles ended with:\n" + "\n".join(prev) + "\n\n" if prev else "")
                 + "Longer-context transcript of this stretch (third recogniser pass, times in seconds):\n" + ctx + "\n\n"
                 + "Segments (\"a\" and \"b\" are the two per-segment transcripts):\n"
@@ -494,6 +499,12 @@ def run(path, mode="offline", api_key="", model="", check=True, progress=None, a
         cues, notes, flags = run_offline(audio, progress)
     if not cues:
         raise RuntimeError("No speech was found in this file.")
+    words = fixes.load_words()                                   # the user's remembered corrections
+    if words:
+        rep, n = fixes.make_replacer(words), 0
+        for c in cues:
+            c["en"], k = rep(c["en"]); n += sum(k.values())
+        notes.append(f"Your saved word list ({len(words)} entries) was applied: {n} replacement(s).")
     srt, shown = make_srt(cues)
     notes.append("Timing was set from the audio only. If your video has a different intro length, use your player's subtitle delay.")
     progress("Done", 1.0)
