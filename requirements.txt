@@ -1,0 +1,6 @@
+sherpa-onnx>=1.12
+soundfile
+numpy
+pykakasi
+flask
+imageio-ffmpeg

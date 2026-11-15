@@ -1,0 +1,15 @@
+{
+  "_comment": "Which speech models the app uses. Change this file in the repository and everyone's Update downloads the new models and removes the ones no longer listed.",
+  "base_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/",
+  "vad": "silero_vad.onnx",
+  "transcribe_whisper": "turbo",
+  "aligner": {
+    "dir": "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01",
+    "encoder": "encoder-epoch-99-avg-1.onnx",
+    "decoder": "decoder-epoch-99-avg-1.onnx",
+    "joiner": "joiner-epoch-99-avg-1.onnx",
+    "tokens": "tokens.txt"
+  },
+  "offline_whisper_default": "medium",
+  "offline_whisper_choices": ["large-v3", "medium", "small"]
+}
